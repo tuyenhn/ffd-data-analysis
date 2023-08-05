@@ -1,0 +1,263 @@
+---
+output:
+  pdf_document: default
+  html_document: default
+---
+
+# Library imports
+
+```{r message=FALSE}
+library(tidyverse)
+library(readxl)
+library(stringi)
+library(tidygeocoder)
+library(sf)
+library(magrittr)
+```
+
+# Data ingestion
+
+## Student grades
+
+```{r warning=FALSE}
+grades <- read_xlsx("student-grades.xlsx") %>%
+  rename_with(
+    ~ tolower(
+      gsub(" ", "_",
+        stri_trans_general(str = .x, id = "Latin-ASCII"),
+        fixed = TRUE
+      )
+    )
+  ) %>%
+  select(
+    ten_hoc_sinh, `truong...5`, `hk1/22`, `xep_loai...7`, `hk2/23`,
+    `xep_loai...9`, ca_nam_2023, `xep_loai...11`
+  ) %>%
+  rename(
+    name = ten_hoc_sinh,
+    school = `truong...5`,
+    sem1 = `hk1/22`,
+    sem1_desc = `xep_loai...7`,
+    sem2 = `hk2/23`,
+    sem2_desc = `xep_loai...9`,
+    yearly = ca_nam_2023,
+    yearly_desc = `xep_loai...11`
+  )
+
+# knitr::kable(grades)
+```
+
+## Student extra information
+
+```{r}
+info <- read_xlsx("student-info.xlsx", skip = 1) %>%
+  rename_with(
+    ~ tolower(
+      gsub(" ", "_",
+        stri_trans_general(str = .x, id = "Latin-ASCII"),
+        fixed = TRUE
+      )
+    )
+  ) %>%
+  select(ho_va_ten, truong_dang_hoc, hoan_canh_gia_dinh) %>%
+  rename(
+    name = ho_va_ten,
+    school = truong_dang_hoc,
+    cond = hoan_canh_gia_dinh
+  ) %>%
+  mutate(cond_code = case_match(cond, "Khó khăn" ~ 0, "Rất khó khăn" ~ 10))
+
+# knitr::kable(info)
+```
+
+# EDA
+
+## Student's grade between grading periods
+
+```{r fig.height=7, fig.width=10}
+grades %>%
+  pivot_longer(
+    -c(name, school, sem1_desc, sem2_desc, yearly_desc),
+    names_to = "period", values_to = "grade"
+  ) %>% mutate(
+    period = case_match(period, "sem1" ~ "Semester 1", "sem2" ~ "Semester 2", "yearly" ~ "Year")
+  ) -> grades_long
+
+grades_long %>%
+  group_by(grade, period) %>%
+  tally() %>%
+  ggplot(aes(x = grade, y = n, fill = period)) +
+  geom_col() +
+  facet_wrap(~period, ncol = 1) + 
+  ggtitle("Student's grade between grading periods") + 
+  scale_fill_discrete("Grading period") + 
+  scale_x_continuous("Grade") + 
+  scale_y_continuous("Student count")
+```
+
+## Student's grade change between semesters
+
+```{r}
+sem_diff_df <- grades %>%
+  mutate(sem_diff = sem2 - sem1) %>%
+  arrange(sem_diff) %>%
+  drop_na() %>%
+  mutate(order = seq(1, length(name)))
+
+sem_diff_df %>%
+  ggplot() +
+  geom_segment(
+    aes(x = order, xend = order, y = 0, yend = sem_diff, color = sem_diff),
+    linewidth = 2
+  ) +
+  scale_y_continuous("Grade change", breaks = seq(-1, 2, 0.5)) +
+  scale_x_discrete("", breaks = NULL) + 
+  theme(legend.position = "none") + 
+  ggtitle("Student's grade change between semesters")
+```
+
+```{r}
+sem_diff_df %>%
+  ggplot() +
+  geom_segment(
+    aes(x = order, xend = order, y = 0, yend = sem_diff, color = school),
+    linewidth = 2
+  ) +
+  scale_y_continuous("Grade change", breaks = seq(-1, 2, 0.5)) +
+  scale_x_discrete("", breaks = NULL) + 
+  scale_color_discrete("School") + 
+  ggtitle("Student's grade change between semesters")
+```
+
+## Student's distribution by school
+
+```{r}
+school_df <- grades %>%
+  group_by(school) %>%
+  tally() %>%
+  mutate(coord = case_match(
+    school,
+    "Bình Ân" ~ "10.362403126853797, 106.73955437027948",
+    "Lê Quốc Việt" ~ "10.38159261387887, 106.70346739495444",
+    "Nguyễn Trọng Dân" ~ "10.34439085884802, 106.70390091842829",
+    "Phùng Thanh Vân" ~ "10.434243045923658, 106.71420856927784",
+    "THPT Chuyên Tiền Giang" ~ "10.365939280759616, 106.33950912448732",
+    "THPT Gò Công Đông" ~ "10.397468900847956, 106.71589633369517",
+    "THPT Nguyễn Văn Côn" ~ "10.316834652373718, 106.71644825096531",
+    "TTGDTX Gò Công Đông" ~ "10.326821445306106, 106.71819370031828",
+    "Thái Văn Nam" ~ "10.400463682054077, 106.74909998415183",
+    "Võ Duy Linh" ~ "10.292109230044234, 106.77615583255589",
+    "Võ Văn Chỉnh" ~ "10.40235281920347, 106.7155538645969",
+    "Võ Văn Dánh" ~ "10.30982939092137, 106.71406118931955",
+    "Võ Văn Kiết" ~ "10.354969902443996, 106.75602352141257",
+    "Đoàn Hồng Phước" ~ "10.412368840294398, 106.76771534550913"
+  )) %>%
+  separate_wider_delim(
+    coord, ",",
+    names = c("Y", "X")
+  ) %>%
+  mutate(X = as.double(X), Y = as.double(Y)) %>%
+  left_join(
+    grades %>%
+      drop_na(yearly) %>%
+      group_by(school) %>%
+      summarise(avg_yearly = mean(yearly)),
+    by = "school"
+  )
+
+knitr::kable(school_df)
+```
+
+```{r}
+gcd_shp <- read_rds("gadm41_VNM_3_pk.rds") %>%
+  terra::unwrap() %>%
+  st_as_sf() %>%
+  filter(GID_2 == "VNM.58.6_1")
+
+info_avg <- info %>%
+  group_by(school) %>%
+  summarise(avg_cond = mean(cond_code))
+
+school_df %<>% left_join(info_avg, by = "school")
+
+ggplot(school_df) + 
+  geom_col(aes(x = n, y = forcats::fct_reorder(school, n))) +
+  scale_x_continuous("Total students") +
+  scale_y_discrete("School") +
+  ggtitle("Student's distribution by school")
+
+ggplot(gcd_shp) +
+  geom_sf() +
+  geom_point(data = school_df, aes(x = X, y = Y, size = n), alpha = 0.7) + 
+  scale_size_continuous("Total students") + 
+  ggtitle("Student's distribution by school")
+
+ggplot(gcd_shp) +
+  geom_sf() +
+  coord_sf(xlim = c(106.62, 106.85)) +
+  geom_point(data = school_df, aes(x = X, y = Y, size = n), alpha = 0.7) +
+  geom_point(y = 10.316690829943303, x = 106.7166489281385, color = "red") + 
+  scale_size_continuous("Total students") + 
+  ggtitle("Student's distribution by school")
+```
+
+## Student's average yearly grade by school
+
+```{r}
+ggplot(school_df) + 
+  geom_col(aes(x = avg_yearly, y = forcats::fct_reorder(school, avg_yearly))) +
+  scale_x_continuous("Average yearly grade", breaks = seq(0, 10, 1)) +
+  scale_y_discrete("School") +
+  ggtitle("Student's average yearly grade by school")
+
+ggplot(gcd_shp) +
+  geom_sf() +
+  coord_sf(xlim = c(106.62, 106.85)) +
+  geom_point(
+    data = school_df,
+    aes(x = X, y = Y, size = n, color = avg_yearly),
+    alpha = 0.9
+  ) +
+  scale_color_viridis_c("Average yearly grade") + 
+  scale_size_continuous("Total students") + 
+  ggtitle("Student's average yearly grade by school")
+```
+
+## Student's "average" familial condition by school
+
+```{r}
+ggplot(school_df) + 
+  geom_col(aes(x = avg_cond, y = forcats::fct_reorder(school, avg_cond))) +
+  scale_x_continuous("\"Average\" familial condition", breaks = c(0, 5, 10), labels = c(0, 0.5, 1)) +
+  scale_y_discrete("School") +
+  ggtitle("Student's \"average\" familial condition by school")
+
+ggplot(gcd_shp) +
+  geom_sf() +
+  coord_sf(xlim = c(106.62, 106.85)) +
+  geom_point(
+    data = school_df,
+    aes(x = X, y = Y, size = n, color = avg_cond),
+    alpha = 0.9
+  ) +
+  scale_color_viridis_c("\"Average\" familial condition") +
+  scale_size_continuous("Total students") +
+  ggtitle("Student's \"average\" familial condition by school")
+```
+
+## Relationship between familial condition and yearly grade?
+
+```{r}
+stud_full <- grades %>% 
+  left_join(info, by = "name") %>% 
+  drop_na(yearly, cond) 
+
+stud_full %>%
+  ggplot() + 
+  geom_bar(aes(x = yearly)) + 
+  facet_wrap(~cond, ncol = 1) + 
+  scale_x_continuous("Yearly grade") + 
+  scale_y_continuous("Total students")
+
+cor(stud_full$yearly, stud_full$cond_code, method = "spearman")
+```
